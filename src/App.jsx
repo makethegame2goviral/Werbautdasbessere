@@ -51,6 +51,7 @@ const makePool = (theme) => {
 const money = (n) => Number(n || 0).toFixed(0) + " €";
 const initials = (name="?") => name.split(" ").slice(0,2).map(x=>x[0]).join("").toUpperCase();
 const shuffle = (list) => [...list].sort(()=>Math.random()-.5);
+const canonicalPlayerKey = (key) => String(key || "").replace(/-auto-\\d+$/, "");
 
 export default function App() {
   const [session,setSession] = useState(null);
@@ -237,9 +238,9 @@ export default function App() {
 
   function chooseNextPlayer(themeId,slot) {
     const list=makePool(themeId);
-    const used=[...picks.map(p=>p.player_key),game?.current_player_key].filter(Boolean);
-    const available=list.filter(p=>!used.includes(p.key));
-    return (available.length?available:list)[Math.floor(Math.random()*(available.length||list.length))];
+    const used=new Set([...picks.map(p=>canonicalPlayerKey(p.player_key)),canonicalPlayerKey(game?.current_player_key)].filter(Boolean));
+    const available=list.filter(p=>!used.has(p.key));
+    return available.length ? available[Math.floor(Math.random()*available.length)] : null;
   }
 
   async function startDraft() {
@@ -275,8 +276,9 @@ export default function App() {
       const {error}=await supabase.from("draft_games").update({status:"completed",current_slot:14,current_player_key:null,highest_bid:0,highest_bidder:null,turn_user_id:null,award_pending:false}).eq("id",game.id);
       if(error) setMessage(error.message); else setMessage("Draft beendet! Vergleicht eure Teams.");
     } else {
-      const {data:latestPicks}=await supabase.from("draft_picks").select("player_key").eq("game_id",game.id);
-      const used=new Set([...(latestPicks||[]).map(p=>p.player_key),game.current_player_key].filter(Boolean));
+      const {data:latestPicks,error:picksError}=await supabase.from("draft_picks").select("player_key").eq("game_id",game.id);
+      if(picksError) return setMessage("Spielerliste konnte nicht geladen werden: "+picksError.message);
+      const used=new Set([...(latestPicks||[]).map(p=>canonicalPlayerKey(p.player_key)),canonicalPlayerKey(game.current_player_key)].filter(Boolean));
       const available=makePool(game.theme).filter(p=>!used.has(p.key));
       const list=available;
       if(!list.length) {
@@ -321,9 +323,9 @@ export default function App() {
     const {error:budgetError}=await supabase.from("draft_game_members").update({budget_left:newBudget}).eq("game_id",game.id).eq("user_id",me.id);
     if(budgetError) { setBusy(false); return setMessage(budgetError.message); }
     if(newBudget===0 && slot<6) {
-      const used=new Set([...picks.map(x=>x.player_key),activePlayer.key]);
+      const used=new Set([...picks.map(x=>canonicalPlayerKey(x.player_key)),activePlayer.key]);
       const fillers=makePool(game.theme).filter(p=>!used.has(p.key));
-      const rows=fillers.slice(0,6-slot).map((p,i)=>({game_id:game.id,user_id:me.id,slot_index:slot+1+i,position:p.role,player_key:p.key+"-auto-"+i,player_name:p.name,rating:Math.min(70,p.rating),paid:0,is_auto:true}));
+      const rows=fillers.slice(0,6-slot).map((p,i)=>({game_id:game.id,user_id:me.id,slot_index:slot+1+i,position:p.role,player_key:p.key,player_name:p.name,rating:Math.min(70,p.rating),paid:0,is_auto:true}));
       const {error:autoError}=await supabase.from("draft_picks").insert(rows);
       if(autoError) { setBusy(false); return setMessage("Spieler gesichert, aber Auto-Füller konnten nicht gespeichert werden: "+autoError.message); }
     }
