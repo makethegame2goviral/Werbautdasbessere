@@ -318,7 +318,7 @@ export default function App() {
       <div className="user-chip"><span className="online-dot"/><span>{profile?.username||username||"Spieler"}</span><button title="Abmelden" onClick={logout}><LogOut size={17}/></button></div>
     </header>
     {tab==="lobby" ? <main className="content">
-      <section className="welcome"><div><p className="eyebrow">WILLKOMMEN IN DER ARENA</p><h1>Dein nächster <em>Draft.</em></h1><p className="muted">Fordere Freunde heraus und beweise, wer das bessere Team baut.</p></div><div className="welcome-badge"><Trophy size={27}/><span>20 €<small>STARTBUDGET</small></span></div></section>
+      <section className="welcome"><div><p className="eyebrow">WILLKOMMEN IN DER ARENA</p><h1>Dein nächster <em>Draft.</em></h1><p className="muted">Fordere Freunde heraus und beweise, wer das bessere Team baut.</p></div><div className="welcome-badge"><Trophy size={27}/><span>20 €<small>VIRTUELLES BUDGET</small></span></div></section>
       {message&&<div className="notice inline-notice">{message}</div>}
       <div className="dashboard-grid">
         <section className="panel theme-panel"><div className="section-head"><div><p className="eyebrow">01 / SPIELMODUS</p><h2>Wähle dein Thema</h2></div><span className="pill">8 THEMEN</span></div>
