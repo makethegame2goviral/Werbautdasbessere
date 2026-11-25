@@ -48,7 +48,6 @@ const makePool = (theme) => {
   if (theme === "football") return FOOTBALL;
   return (GENERIC[theme] || []).map((name,i)=>({key:theme+i,group:"all",name,role:ROLE_SETS[theme][i % ROLE_SETS[theme].length],rating:99-i*2}));
 };
-const makeEmail = (name) => name.trim().toLowerCase() + "@users.legenddraft.app";
 const money = (n) => Number(n || 0).toFixed(0) + " €";
 const initials = (name="?") => name.split(" ").slice(0,2).map(x=>x[0]).join("").toUpperCase();
 const shuffle = (list) => [...list].sort(()=>Math.random()-.5);
@@ -57,6 +56,7 @@ export default function App() {
   const [session,setSession] = useState(null);
   const [profile,setProfile] = useState(null);
   const [username,setUsername] = useState("");
+  const [email,setEmail] = useState("");
   const [password,setPassword] = useState("");
   const [mode,setMode] = useState("login");
   const [message,setMessage] = useState("");
@@ -158,15 +158,16 @@ export default function App() {
   async function authenticate(e) {
     e.preventDefault(); setMessage("");
     const clean=username.trim().toLowerCase();
-    if(!/^[a-z0-9_]{3,20}$/.test(clean)) return setMessage("Name: 3–20 Zeichen, nur Buchstaben, Zahlen und _.");
+    if(mode==="signup" && !/^[a-z0-9_]{3,20}$/.test(clean)) return setMessage("Name: 3–20 Zeichen, nur Buchstaben, Zahlen und _.");
+    if(!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setMessage("Bitte gib eine gültige E-Mail-Adresse ein.");
     if(password.length<8) return setMessage("Dein Passwort muss mindestens 8 Zeichen haben.");
     setBusy(true);
     const result=mode==="signup"
-      ? await supabase.auth.signUp({email:makeEmail(clean),password,options:{data:{username:clean}}})
-      : await supabase.auth.signInWithPassword({email:makeEmail(clean),password});
+      ? await supabase.auth.signUp({email:email.trim().toLowerCase(),password,options:{data:{username:clean}}})
+      : await supabase.auth.signInWithPassword({email:email.trim().toLowerCase(),password});
     setBusy(false);
     if(result.error) return setMessage(result.error.message);
-    if(mode==="signup" && !result.data.session) return setMessage("Account erstellt. Für den Start muss in Supabase unter Authentication → Providers → Email die E-Mail-Bestätigung ausgeschaltet sein, da du dich mit Benutzername anmeldest.");
+    if(mode==="signup" && !result.data.session) return setMessage("Account erstellt. Bitte bestätige deine E-Mail über den Link in deinem Postfach und melde dich danach an.");
     setSession(result.data.session);
     setMessage(mode==="signup"?"Account erstellt!":"Willkommen zurück!");
   }
@@ -302,12 +303,13 @@ export default function App() {
     <h1>LEGEND <em>DRAFT</em></h1><p className="muted">Baue dein Team. Überbiete deine Freunde. Schreib Geschichte.</p>
     <div className="auth-tabs"><button className={mode==="login"?"active":""} onClick={()=>setMode("login")}>Anmelden</button><button className={mode==="signup"?"active":""} onClick={()=>setMode("signup")}>Account erstellen</button></div>
     <form onSubmit={authenticate} className="auth-form">
-      <label>BENUTZERNAME<input value={username} onChange={e=>setUsername(e.target.value)} placeholder="z. B. legend_10" autoComplete="username" required maxLength={20}/></label>
+      {mode==="signup"&&<label>BENUTZERNAME<input value={username} onChange={e=>setUsername(e.target.value)} placeholder="z. B. legend_10" autoComplete="username" required maxLength={20}/></label>}
+      <label>E-MAIL-ADRESSE<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="du@beispiel.de" autoComplete="email" required/></label>
       <label>PASSWORT<input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Mindestens 8 Zeichen" autoComplete={mode==="signup"?"new-password":"current-password"} required minLength={8}/></label>
       <button className="primary full" disabled={busy}>{busy?"Einen Moment…":mode==="signup"?"Account erstellen":"Los geht's"} <ChevronRight size={18}/></button>
     </form>
     {message&&<p className="notice">{message}</p>}
-    <p className="tiny">Dein Benutzername ist öffentlich sichtbar. Teile dein Passwort niemals.</p>
+    <p className="tiny">Dein Benutzername ist öffentlich sichtbar. Deine E-Mail bleibt privat. Teile dein Passwort niemals.</p>
   </div></main>;
 
   return <div className="app-shell">
