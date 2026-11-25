@@ -51,7 +51,7 @@ const makePool = (theme) => {
 const money = (n) => Number(n || 0).toFixed(0) + " €";
 const initials = (name="?") => name.split(" ").slice(0,2).map(x=>x[0]).join("").toUpperCase();
 const shuffle = (list) => [...list].sort(()=>Math.random()-.5);
-const canonicalPlayerKey = (key) => String(key || "").replace(/-auto-\\d+$/, "");
+const canonicalPlayerKey = (key) => String(key || "").replace(/-auto-\d+$/, "");
 
 export default function App() {
   const [session,setSession] = useState(null);
