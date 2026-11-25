@@ -175,7 +175,15 @@ export default function App() {
   async function logout(){ await supabase.auth.signOut(); setGameId(null);setGame(null);setSession(null); }
 
   async function sendFriendRequest(userId) {
+    if (!me || !userId || userId===me.id) return;
+    setBusy(true);
+    const {data:existing,error:lookupError}=await supabase.from("draft_friend_requests")
+      .select("id,status").eq("sender_id",me.id).eq("receiver_id",userId)
+      .in("status",["pending","accepted"]).limit(1);
+    if (lookupError) { setBusy(false); return setMessage("Anfrage konnte nicht geprüft werden: "+lookupError.message); }
+    if (existing?.length) { setBusy(false); return setMessage(existing[0].status==="accepted"?"Ihr seid bereits verbunden.":"Anfrage wurde bereits gesendet."); }
     const {error}=await supabase.from("draft_friend_requests").insert({sender_id:me.id,receiver_id:userId});
+    setBusy(false);
     setMessage(error?error.message:"Freundschaftsanfrage gesendet.");
   }
   async function answerFriend(id,status) {
@@ -249,7 +257,9 @@ export default function App() {
       const available=makePool(game.theme).filter(p=>!used.has(p.key));
       const list=available.length?available:makePool(game.theme);
       const next=list[Math.floor(Math.random()*list.length)];
-      const {error}=await supabase.from("draft_games").update({current_slot:nextSlot,current_player_key:next.key,highest_bid:0,highest_bidder:null,turn_user_id:members[0]?.user_id||me.id,award_pending:false}).eq("id",game.id);
+      const opponentId=members.find(m=>m.user_id!==game.created_by)?.user_id;
+      const nextTurn=nextSlot%2===0?game.created_by:(opponentId||game.created_by);
+      const {error}=await supabase.from("draft_games").update({current_slot:nextSlot,current_player_key:next.key,highest_bid:0,highest_bidder:null,turn_user_id:nextTurn,award_pending:false}).eq("id",game.id);
       if(error) setMessage(error.message);
     }
     loadGame(game.id);
@@ -326,7 +336,7 @@ export default function App() {
           <button className="primary create-btn" onClick={createGame} disabled={busy}><Plus size={18}/> Neue Lobby erstellen <span>20 € Budget</span></button>
         </section>
         <section className="panel online-panel"><div className="section-head"><div><p className="eyebrow">02 / DEINE GEGNER</p><h2>Online-Spieler</h2></div><span className="online-count"><i/> {online.length} ONLINE</span></div>
-          {online.length===0?<div className="empty-state"><Users size={28}/><strong>Noch niemand online</strong><small>Teile den Link mit Freunden und verabredet euch.</small></div>:<div className="online-list">{online.map(u=><div className="online-user" key={u.user_id}><span className="avatar">{initials(u.username)}</span><span className="online-name">{u.username}<small>Online</small></span><button className="icon-btn" onClick={()=>sendFriendRequest(u.user_id)} title="Freundschaftsanfrage"><Users size={16}/></button><button className="invite-btn" onClick={()=>sendFriendRequest(u.user_id)}>Anfrage</button></div>)}</div>}
+          {online.length===0?<div className="empty-state"><Users size={28}/><strong>Noch niemand online</strong><small>Teile den Link mit Freunden und verabredet euch.</small></div>:<div className="online-list">{online.map(u=><div className="online-user" key={u.user_id}><span className="avatar">{initials(u.username)}</span><span className="online-name">{u.username}<small>Online</small></span><button className="invite-btn" onClick={()=>sendFriendRequest(u.user_id)}>Freund hinzufügen</button></div>)}</div>}
           <div className="divider-line"/><div className="section-head compact"><h3><Bell size={16}/> Anfragen</h3><span className="pill">{requests.length+invites.length}</span></div>
           {invites.map(i=><div className="request-row" key={i.id}><span>🎮 Spieleinladung</span><div><button className="accept" onClick={()=>answerInvite(i,"accepted")}><Check size={15}/> Beitreten</button><button className="decline" onClick={()=>answerInvite(i,"declined")}><X size={15}/></button></div></div>)}
           {requests.map(r=><div className="request-row" key={r.id}><span>👤 Freundschaftsanfrage</span><div><button className="accept" onClick={()=>answerFriend(r.id,"accepted")}><Check size={15}/> Annehmen</button><button className="decline" onClick={()=>answerFriend(r.id,"declined")}><X size={15}/></button></div></div>)}
