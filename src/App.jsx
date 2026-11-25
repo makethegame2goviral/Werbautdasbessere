@@ -243,7 +243,11 @@ export default function App() {
       const {error}=await supabase.from("draft_games").update({status:"completed",current_slot:14,current_player_key:null,highest_bid:0,highest_bidder:null,turn_user_id:null,award_pending:false}).eq("id",game.id);
       if(error) setMessage(error.message); else setMessage("Draft beendet! Vergleicht eure Teams.");
     } else {
-      const next=chooseNextPlayer(game.theme,nextSlot);
+      const {data:latestPicks}=await supabase.from("draft_picks").select("player_key").eq("game_id",game.id);
+      const used=new Set([...(latestPicks||[]).map(p=>p.player_key),game.current_player_key].filter(Boolean));
+      const available=makePool(game.theme).filter(p=>!used.has(p.key));
+      const list=available.length?available:makePool(game.theme);
+      const next=list[Math.floor(Math.random()*list.length)];
       const {error}=await supabase.from("draft_games").update({current_slot:nextSlot,current_player_key:next.key,highest_bid:0,highest_bidder:null,turn_user_id:members[0]?.user_id||me.id,award_pending:false}).eq("id",game.id);
       if(error) setMessage(error.message);
     }
