@@ -1,10 +1,10 @@
 # LEGEND DRAFT
 
-Ein Multiplayer-Team-Draft für Freunde. Jeder Spieler erstellt ein Konto, sieht aktive Spieler, lädt jemanden in eine Lobby ein und baut mit einem **virtuellen Spielbudget von 20 Punkten** sein Team. Es gibt keine Echtgeld-Funktion.
+Ein Multiplayer-Team-Draft für Freunde. Jeder Spieler erstellt ein Konto mit Benutzername, E-Mail und Passwort, sieht aktive Spieler, lädt jemanden in eine Lobby ein und baut mit einem **virtuellen Spielbudget von 20 €** sein Team. Es gibt keine Echtgeld-Funktion.
 
 ## Enthalten
 
-- Benutzername + Passwort über Supabase Auth
+- Supabase Auth mit E-Mail-Bestätigung und öffentlichem Benutzernamen
 - Online-Anzeige mit Supabase Realtime Presence
 - Freundschafts- und Spieleinladungen
 - Multiplayer-Lobbys
@@ -18,7 +18,7 @@ Ein Multiplayer-Team-Draft für Freunde. Jeder Spieler erstellt ein Konto, sieht
 
 Das Projekt verwendet das bestehende NEXYRON-Projekt. Die Tabellen beginnen mit `draft_`, damit bestehende NEXYRON-Daten nicht überschrieben werden.
 
-**Wichtig für die Benutzername-Anmeldung:** Das Frontend verwendet intern eine technische E-Mail-Adresse aus dem Benutzernamen (`<username>@users.legenddraft.app`). In Supabase muss unter **Authentication → Providers → Email** die E-Mail-Bestätigung deaktiviert sein, da die Nutzer sich nur mit Benutzername und Passwort anmelden. Passwörter werden ausschließlich von Supabase Auth verwaltet.
+Die Anmeldung verwendet eine echte E-Mail-Adresse, damit Supabase die E-Mail bestätigen und Konten sicher verwalten kann. Der gewählte Benutzername wird im Spiel öffentlich angezeigt; die E-Mail-Adresse bleibt privat. Passwörter werden ausschließlich von Supabase Auth verwaltet.
 
 Der Browser verwendet nur den öffentlichen Publishable Key. Niemals den `service_role`- oder Secret-Key in das Frontend eintragen.
 
