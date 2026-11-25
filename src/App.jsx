@@ -202,18 +202,36 @@ export default function App() {
   }
 
   async function inviteToGame(userId) {
-    if(!gameId) return;
+    if(!gameId || !userId || userId===me.id) return;
+    const {data:room,error:roomError}=await supabase.from("draft_games").select("status").eq("id",gameId).single();
+    if(roomError) return setMessage("Lobby konnte nicht geprüft werden: "+roomError.message);
+    if(room.status!=="lobby") return setMessage("Diese Runde hat bereits begonnen.");
+    const {data:membersNow,error:memberError}=await supabase.from("draft_game_members").select("user_id").eq("game_id",gameId);
+    if(memberError) return setMessage(memberError.message);
+    if((membersNow||[]).some(m=>m.user_id===userId)) return setMessage("Dieser Spieler ist bereits in der Lobby.");
+    if((membersNow||[]).length>=2) return setMessage("Die Lobby ist bereits voll.");
+    const {data:pending,error:checkError}=await supabase.from("draft_game_invites").select("id").eq("game_id",gameId).eq("receiver_id",userId).eq("status","pending").limit(1);
+    if(checkError) return setMessage(checkError.message);
+    if(pending?.length) return setMessage("Eine Einladung wurde bereits gesendet.");
     const {error}=await supabase.from("draft_game_invites").insert({game_id:gameId,sender_id:me.id,receiver_id:userId});
     setMessage(error?error.message:"Spieleinladung gesendet.");
   }
   async function answerInvite(invite,status) {
-    const {error}=await supabase.from("draft_game_invites").update({status}).eq("id",invite.id);
-    if(error) return setMessage(error.message);
     if(status==="accepted") {
-      const {error:joinError}=await supabase.from("draft_game_members").insert({game_id:invite.game_id,user_id:me.id,budget_left:20});
-      if(joinError) return setMessage(joinError.message);
+      const {data:room,error:roomError}=await supabase.from("draft_games").select("status").eq("id",invite.game_id).single();
+      if(roomError) return setMessage("Spiel konnte nicht geladen werden: "+roomError.message);
+      if(room.status!=="lobby") return setMessage("Das Spiel hat bereits begonnen. Bitte lass dir eine neue Einladung schicken.");
+      const {data:membersNow,error:memberError}=await supabase.from("draft_game_members").select("user_id").eq("game_id",invite.game_id);
+      if(memberError) return setMessage(memberError.message);
+      if((membersNow||[]).length>=2 && !(membersNow||[]).some(m=>m.user_id===me.id)) return setMessage("Die Lobby ist bereits voll.");
+      if(!(membersNow||[]).some(m=>m.user_id===me.id)) {
+        const {error:joinError}=await supabase.from("draft_game_members").insert({game_id:invite.game_id,user_id:me.id,budget_left:20});
+        if(joinError) return setMessage(joinError.message);
+      }
       setGameId(invite.game_id);setTab("game");
     }
+    const {error}=await supabase.from("draft_game_invites").update({status}).eq("id",invite.id);
+    if(error) setMessage(error.message);
     loadLobby();
   }
 
@@ -225,13 +243,18 @@ export default function App() {
   }
 
   async function startDraft() {
+    if(!game || game.created_by!==me.id) return setMessage("Nur der Ersteller kann den Draft starten.");
+    const {data:membersNow,error:memberError}=await supabase.from("draft_game_members").select("user_id").eq("game_id",game.id);
+    if(memberError) return setMessage(memberError.message);
+    if((membersNow||[]).length!==2) return setMessage("Zum Starten müssen genau zwei Spieler in der Lobby sein.");
     const first=chooseNextPlayer(game.theme,0);
-    const {error}=await supabase.from("draft_games").update({status:"auction",current_slot:0,current_player_key:first.key,highest_bid:0,highest_bidder:null,turn_user_id:me.id,award_pending:false}).eq("id",game.id);
-    if(error) setMessage(error.message);
+    if(!first) return setMessage("Für dieses Thema sind keine Spieler verfügbar.");
+    const {error}=await supabase.from("draft_games").update({status:"auction",current_slot:0,current_player_key:first.key,highest_bid:0,highest_bidder:null,turn_user_id:me.id,award_pending:false}).eq("id",game.id).eq("status","lobby");
+    if(error) setMessage(error.message); else await loadGame(game.id);
   }
 
   async function placeBid() {
-    if(!game||!activePlayer||!myMember) return;
+    if(!game||game.status!=="auction"||game.award_pending||!activePlayer||!myMember) return;
     if(myPicks.length>=7) return setMessage("Dein Team ist bereits vollständig.");
     const amount=Number(game.highest_bid||0)+1;
     if(game.turn_user_id && game.turn_user_id!==me.id) return setMessage("Warte, bis du an der Reihe bist.");
@@ -255,7 +278,13 @@ export default function App() {
       const {data:latestPicks}=await supabase.from("draft_picks").select("player_key").eq("game_id",game.id);
       const used=new Set([...(latestPicks||[]).map(p=>p.player_key),game.current_player_key].filter(Boolean));
       const available=makePool(game.theme).filter(p=>!used.has(p.key));
-      const list=available.length?available:makePool(game.theme);
+      const list=available;
+      if(!list.length) {
+        const {error}=await supabase.from("draft_games").update({status:"completed",current_slot:14,current_player_key:null,highest_bid:0,highest_bidder:null,turn_user_id:null,award_pending:false}).eq("id",game.id);
+        if(error) setMessage(error.message); else setMessage("Keine weiteren Spieler verfügbar. Draft beendet.");
+        await loadGame(game.id);
+        return;
+      }
       const next=list[Math.floor(Math.random()*list.length)];
       const opponentId=members.find(m=>m.user_id!==game.created_by)?.user_id;
       const nextTurn=nextSlot%2===0?game.created_by:(opponentId||game.created_by);
@@ -266,7 +295,7 @@ export default function App() {
   }
 
   async function passAuction() {
-    if(!game||!activePlayer) return;
+    if(!game||game.status!=="auction"||game.award_pending||!activePlayer) return;
     if(game.turn_user_id && game.turn_user_id!==me.id) return setMessage("Warte, bis du an der Reihe bist.");
     if(game.highest_bidder) {
       const {error}=await supabase.from("draft_games").update({award_pending:true,turn_user_id:game.highest_bidder}).eq("id",game.id);
@@ -278,7 +307,7 @@ export default function App() {
   }
 
   async function securePlayer() {
-    if(!game?.award_pending || game.highest_bidder!==me.id || !activePlayer || !myMember) return;
+    if(!game || game.status!=="auction" || !game.award_pending || game.highest_bidder!==me.id || !activePlayer || !myMember) return;
     setBusy(true);
     const slot=myPicks.length;
     if(slot>=7) { setBusy(false); return setMessage("Dein Team ist bereits vollständig."); }
@@ -294,12 +323,9 @@ export default function App() {
     if(newBudget===0 && slot<6) {
       const used=new Set([...picks.map(x=>x.player_key),activePlayer.key]);
       const fillers=makePool(game.theme).filter(p=>!used.has(p.key));
-      const rows=Array.from({length:6-slot},(_,i)=>{
-        const p=fillers[i%Math.max(1,fillers.length)]||{key:"auto"+i,name:"Wildcard",role:"Wildcard",rating:60};
-        return {game_id:game.id,user_id:me.id,slot_index:slot+1+i,position:p.role,player_key:p.key+"-auto-"+i,player_name:p.name,rating:Math.min(70,p.rating),paid:0,is_auto:true};
-      });
+      const rows=fillers.slice(0,6-slot).map((p,i)=>({game_id:game.id,user_id:me.id,slot_index:slot+1+i,position:p.role,player_key:p.key+"-auto-"+i,player_name:p.name,rating:Math.min(70,p.rating),paid:0,is_auto:true}));
       const {error:autoError}=await supabase.from("draft_picks").insert(rows);
-      if(autoError) setMessage("Spieler gesichert, aber Auto-Füller konnten nicht gespeichert werden: "+autoError.message);
+      if(autoError) { setBusy(false); return setMessage("Spieler gesichert, aber Auto-Füller konnten nicht gespeichert werden: "+autoError.message); }
     }
     setBusy(false);
     await advanceAuction();
