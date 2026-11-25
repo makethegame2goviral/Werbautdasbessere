@@ -208,14 +208,14 @@ export default function App() {
 
   function chooseNextPlayer(themeId,slot) {
     const list=makePool(themeId);
-    const used=picks.map(p=>p.player_key);
+    const used=[...picks.map(p=>p.player_key),game?.current_player_key].filter(Boolean);
     const available=list.filter(p=>!used.includes(p.key));
     return (available.length?available:list)[Math.floor(Math.random()*(available.length||list.length))];
   }
 
   async function startDraft() {
     const first=chooseNextPlayer(game.theme,0);
-    const {error}=await supabase.from("draft_games").update({status:"auction",current_slot:0,current_player_key:first.key,highest_bid:0,highest_bidder:null,turn_user_id:me.id}).eq("id",game.id);
+    const {error}=await supabase.from("draft_games").update({status:"auction",current_slot:0,current_player_key:first.key,highest_bid:0,highest_bidder:null,turn_user_id:me.id,award_pending:false}).eq("id",game.id);
     if(error) setMessage(error.message);
   }
 
@@ -234,39 +234,57 @@ export default function App() {
     setBusy(false);loadGame(game.id);
   }
 
+  async function advanceAuction() {
+    const nextSlot=Number(game.current_slot||0)+1;
+    if(nextSlot>=14) {
+      const {error}=await supabase.from("draft_games").update({status:"completed",current_slot:14,current_player_key:null,highest_bid:0,highest_bidder:null,turn_user_id:null,award_pending:false}).eq("id",game.id);
+      if(error) setMessage(error.message); else setMessage("Draft beendet! Vergleicht eure Teams.");
+    } else {
+      const next=chooseNextPlayer(game.theme,nextSlot);
+      const {error}=await supabase.from("draft_games").update({current_slot:nextSlot,current_player_key:next.key,highest_bid:0,highest_bidder:null,turn_user_id:members[0]?.user_id||me.id,award_pending:false}).eq("id",game.id);
+      if(error) setMessage(error.message);
+    }
+    loadGame(game.id);
+  }
+
   async function passAuction() {
     if(!game||!activePlayer) return;
     if(game.turn_user_id && game.turn_user_id!==me.id) return setMessage("Warte, bis du an der Reihe bist.");
-    const winner=game.highest_bidder;
-    if(winner) {
-      const winnerMember=members.find(m=>m.user_id===winner);
-      const slot=picks.filter(p=>p.user_id===winner).length;
-      const {error:pickError}=await supabase.from("draft_picks").insert({
-        game_id:game.id,user_id:winner,slot_index:slot,position:activePlayer.role,
-        player_key:activePlayer.key,player_name:activePlayer.name,rating:activePlayer.rating,
-        paid:game.highest_bid,is_auto:false
-      });
-      if(pickError) return setMessage(pickError.message);
-      const newBudget=Math.max(0,Number(winnerMember?.budget_left||0)-Number(game.highest_bid||0));
-      await supabase.from("draft_game_members").update({budget_left:newBudget}).eq("game_id",game.id).eq("user_id",winner);
-      if(newBudget===0 && slot<6) {
-        const fillers=makePool(game.theme).filter(p=>!picks.some(x=>x.player_key===p.key)&&p.key!==activePlayer.key);
-        const rows=Array.from({length:6-slot},(_,i)=>{
-          const p=fillers[i%Math.max(1,fillers.length)]||{key:"auto"+i,name:"Wildcard",role:"Wildcard",rating:60};
-          return {game_id:game.id,user_id:winner,slot_index:slot+1+i,position:p.role,player_key:p.key+"-auto-"+i,player_name:p.name,rating:Math.min(70,p.rating),paid:0,is_auto:true};
-        });
-        await supabase.from("draft_picks").insert(rows);
-      }
-    }
-    const nextSlot=Number(game.current_slot||0)+1;
-    if(nextSlot>=14) {
-      await supabase.from("draft_games").update({status:"completed",current_slot:14,current_player_key:null,highest_bid:0,highest_bidder:null,turn_user_id:null}).eq("id",game.id);
-      setMessage("Draft beendet! Vergleicht eure Teams.");
+    if(game.highest_bidder) {
+      const {error}=await supabase.from("draft_games").update({award_pending:true,turn_user_id:game.highest_bidder}).eq("id",game.id);
+      if(error) setMessage(error.message);
+      else setMessage("Der Höchstbietende kann den Spieler jetzt sichern.");
     } else {
-      const next=chooseNextPlayer(game.theme,nextSlot);
-      await supabase.from("draft_games").update({current_slot:nextSlot,current_player_key:next.key,highest_bid:0,highest_bidder:null,turn_user_id:members[0]?.user_id||me.id}).eq("id",game.id);
+      await advanceAuction();
     }
-    loadGame(game.id);
+  }
+
+  async function securePlayer() {
+    if(!game?.award_pending || game.highest_bidder!==me.id || !activePlayer || !myMember) return;
+    setBusy(true);
+    const slot=myPicks.length;
+    if(slot>=7) { setBusy(false); return setMessage("Dein Team ist bereits vollständig."); }
+    const {error}=await supabase.from("draft_picks").insert({
+      game_id:game.id,user_id:me.id,slot_index:slot,position:activePlayer.role,
+      player_key:activePlayer.key,player_name:activePlayer.name,rating:activePlayer.rating,
+      paid:game.highest_bid,is_auto:false
+    });
+    if(error) { setBusy(false); return setMessage(error.message); }
+    const newBudget=Math.max(0,Number(myMember.budget_left||0)-Number(game.highest_bid||0));
+    const {error:budgetError}=await supabase.from("draft_game_members").update({budget_left:newBudget}).eq("game_id",game.id).eq("user_id",me.id);
+    if(budgetError) { setBusy(false); return setMessage(budgetError.message); }
+    if(newBudget===0 && slot<6) {
+      const used=new Set([...picks.map(x=>x.player_key),activePlayer.key]);
+      const fillers=makePool(game.theme).filter(p=>!used.has(p.key));
+      const rows=Array.from({length:6-slot},(_,i)=>{
+        const p=fillers[i%Math.max(1,fillers.length)]||{key:"auto"+i,name:"Wildcard",role:"Wildcard",rating:60};
+        return {game_id:game.id,user_id:me.id,slot_index:slot+1+i,position:p.role,player_key:p.key+"-auto-"+i,player_name:p.name,rating:Math.min(70,p.rating),paid:0,is_auto:true};
+      });
+      const {error:autoError}=await supabase.from("draft_picks").insert(rows);
+      if(autoError) setMessage("Spieler gesichert, aber Auto-Füller konnten nicht gespeichert werden: "+autoError.message);
+    }
+    setBusy(false);
+    await advanceAuction();
   }
 
   async function leaveGame(){setGameId(null);setGame(null);setTab("lobby");}
@@ -299,7 +317,7 @@ export default function App() {
           <button className="primary create-btn" onClick={createGame} disabled={busy}><Plus size={18}/> Neue Lobby erstellen <span>20 € Budget</span></button>
         </section>
         <section className="panel online-panel"><div className="section-head"><div><p className="eyebrow">02 / DEINE GEGNER</p><h2>Online-Spieler</h2></div><span className="online-count"><i/> {online.length} ONLINE</span></div>
-          {online.length===0?<div className="empty-state"><Users size={28}/><strong>Noch niemand online</strong><small>Teile den Link mit Freunden und verabredet euch.</small></div>:<div className="online-list">{online.map(u=><div className="online-user" key={u.user_id}><span className="avatar">{initials(u.username)}</span><span className="online-name">{u.username}<small>Online</small></span><button className="icon-btn" onClick={()=>sendFriendRequest(u.user_id)} title="Freundschaftsanfrage"><Users size={16}/></button><button className="invite-btn" onClick={()=>setMessage("Erstelle zuerst eine Lobby, dann kannst du Spieler einladen.")}>Einladen</button></div>)}</div>}
+          {online.length===0?<div className="empty-state"><Users size={28}/><strong>Noch niemand online</strong><small>Teile den Link mit Freunden und verabredet euch.</small></div>:<div className="online-list">{online.map(u=><div className="online-user" key={u.user_id}><span className="avatar">{initials(u.username)}</span><span className="online-name">{u.username}<small>Online</small></span><button className="icon-btn" onClick={()=>sendFriendRequest(u.user_id)} title="Freundschaftsanfrage"><Users size={16}/></button><button className="invite-btn" onClick={()=>sendFriendRequest(u.user_id)}>Anfrage</button></div>)}</div>}
           <div className="divider-line"/><div className="section-head compact"><h3><Bell size={16}/> Anfragen</h3><span className="pill">{requests.length+invites.length}</span></div>
           {invites.map(i=><div className="request-row" key={i.id}><span>🎮 Spieleinladung</span><div><button className="accept" onClick={()=>answerInvite(i,"accepted")}><Check size={15}/> Beitreten</button><button className="decline" onClick={()=>answerInvite(i,"declined")}><X size={15}/></button></div></div>)}
           {requests.map(r=><div className="request-row" key={r.id}><span>👤 Freundschaftsanfrage</span><div><button className="accept" onClick={()=>answerFriend(r.id,"accepted")}><Check size={15}/> Annehmen</button><button className="decline" onClick={()=>answerFriend(r.id,"declined")}><X size={15}/></button></div></div>)}
@@ -313,9 +331,9 @@ export default function App() {
       {!gameId||!game?<div className="panel empty-game"><Swords size={32}/><h2>Kein Spiel geöffnet</h2><button className="primary" onClick={()=>setTab("lobby")}>Zur Lobby</button></div>:<>
         <div className="game-heading"><div><p className="eyebrow">{currentTheme.emoji} {currentTheme.name.toUpperCase()}</p><h1>Die Arena</h1><p className="muted">Beide Teams live im Blick · Spielcode {game.id.slice(0,6).toUpperCase()}</p></div><button className="secondary" onClick={leaveGame}>Lobby verlassen</button></div>
         <div className="game-toolbar"><div className="budget-box"><Coins/><span>Dein Budget<strong>{money(myMember?.budget_left)}</strong></span></div><div className="round-box"><span>RUNDE</span><strong>{Math.min(game.current_slot+1,14)} <small>/ 14</small></strong></div><div className="budget-box"><Crown/><span>Gegner<strong>{money(opponent?.budget_left)}</strong></span></div></div>
-        {game.status==="lobby" ? <section className="panel start-panel"><div className="big-emoji">{currentTheme.emoji}</div><h2>Warte auf deinen Gegner</h2><p className="muted">{members.length}/2 Spieler sind in der Lobby.</p><div className="member-chips">{members.map(m=><span key={m.user_id}>{m.user_id===me.id?"Du": "Mitspieler"} <i/></span>)}</div>{game.created_by===me.id&&members.length>=2&&<button className="primary" onClick={startDraft}><Zap size={18}/> Draft starten</button>}{members.length<2&&<p className="tiny">Gehe zurück zur Lobby und lade einen Online-Spieler ein.</p>}</section>
+        {game.status==="lobby" ? <section className="panel start-panel"><div className="big-emoji">{currentTheme.emoji}</div><h2>Warte auf deinen Gegner</h2><p className="muted">{members.length}/2 Spieler sind in der Lobby.</p><div className="member-chips">{members.map(m=><span key={m.user_id}>{m.user_id===me.id?"Du": "Mitspieler"} <i/></span>)}</div>{members.length<2&&<div className="room-invites"><strong>Online-Spieler einladen</strong>{online.length?online.map(u=><div className="online-user" key={u.user_id}><span className="avatar">{initials(u.username)}</span><span className="online-name">{u.username}<small>Online</small></span><button className="invite-btn" onClick={()=>inviteToGame(u.user_id)}>Einladen</button></div>):<p className="empty-small">Noch niemand online.</p>}</div>}{game.created_by===me.id&&members.length>=2&&<button className="primary" onClick={startDraft}><Zap size={18}/> Draft starten</button>}</section>
         : game.status==="completed" ? <section className="panel result-panel"><Trophy size={40}/><p className="eyebrow">DRAFT ABGESCHLOSSEN</p><h2>Das sind eure Teams.</h2><div className="team-columns"><Team title="DEIN TEAM" picks={myPicks} slots={slots} score={totalRating(myPicks)}/><Team title="GEGNER" picks={opponentPicks} slots={slots} score={totalRating(opponentPicks)}/></div><button className="primary" onClick={()=>setTab("lobby")}>Zurück zur Lobby</button></section>
-        : <><section className="auction-panel panel"><div className="auction-top"><div><p className="eyebrow">JETZT IN DER AUKTION</p><h2>{activePlayer?.name||"Nächster Spieler"}</h2><p className="muted">{activePlayer?.role} · Stärke {activePlayer?.rating||"—"}</p></div><div className="player-rating">{activePlayer?.rating||"—"}<small>RATING</small></div></div><div className="auction-bid"><span>HÖCHSTGEBOT</span><strong>{money(game.highest_bid)}</strong><small>{game.highest_bidder===me.id?"Du führst":game.highest_bidder?"Gegner führt":"Noch kein Gebot"}</small></div><div className="auction-actions"><button className="primary bid-button" onClick={placeBid} disabled={busy||game.turn_user_id!==me.id||!activePlayer||Number(myMember?.budget_left||0)<Number(game.highest_bid||0)+1}><Coins size={18}/> {money(Number(game.highest_bid||0)+1)} bieten</button><button className="secondary" onClick={passAuction} disabled={busy||game.turn_user_id!==me.id}>Passen / aufgeben</button></div><p className="turn-hint">{game.turn_user_id===me.id?"Du bist dran!": "Der andere Spieler ist am Zug."}</p></section>
+        : <><section className="auction-panel panel"><div className="auction-top"><div><p className="eyebrow">JETZT IN DER AUKTION</p><h2>{activePlayer?.name||"Nächster Spieler"}</h2><p className="muted">{activePlayer?.role} · Stärke {activePlayer?.rating||"—"}</p></div><div className="player-rating">{activePlayer?.rating||"—"}<small>RATING</small></div></div><div className="auction-bid"><span>HÖCHSTGEBOT</span><strong>{money(game.highest_bid)}</strong><small>{game.highest_bidder===me.id?"Du führst":game.highest_bidder?"Gegner führt":"Noch kein Gebot"}</small></div>{game.award_pending ? <div className="auction-actions">{game.highest_bidder===me.id?<button className="primary bid-button" onClick={securePlayer} disabled={busy}><Check size={18}/> Spieler sichern · {money(game.highest_bid)}</button>:<p className="turn-hint">Der Höchstbietende bestätigt gerade den Spieler.</p>}</div> : <div className="auction-actions"><button className="primary bid-button" onClick={placeBid} disabled={busy||game.turn_user_id!==me.id||!activePlayer||Number(myMember?.budget_left||0)<Number(game.highest_bid||0)+1}><Coins size={18}/> {money(Number(game.highest_bid||0)+1)} bieten</button><button className="secondary" onClick={passAuction} disabled={busy||game.turn_user_id!==me.id}>Passen / aufgeben</button></div>}<p className="turn-hint">{game.award_pending?(game.highest_bidder===me.id?"Du hast den Zuschlag – sichere den Spieler.":"Warte auf die Bestätigung des Höchstbietenden."):game.turn_user_id===me.id?"Du bist dran!":"Der andere Spieler ist am Zug."}</p></section>
           <div className="team-columns"><Team title="DEIN TEAM" picks={myPicks} slots={slots} score={totalRating(myPicks)}/><Team title="GEGNER-TEAM" picks={opponentPicks} slots={slots} score={totalRating(opponentPicks)}/></div>
           <section className="panel bid-feed"><div className="section-head compact"><h3><Zap size={16}/> Letzte Gebote</h3><button className="text-btn" onClick={()=>loadGame(game.id)}><RefreshCw size={14}/> Aktualisieren</button></div>{bids.slice(0,6).map(b=><div className="bid-row" key={b.id}><span>{b.bidder_id===me.id?"Du":"Gegner"}</span><strong>{money(b.amount)}</strong><small>{b.player_key===activePlayer?.key?"Aktueller Spieler":"Spieler"}</small></div>)}{!bids.length&&<p className="empty-small">Noch keine Gebote.</p>}</section>
         </>}
