@@ -255,19 +255,42 @@ export default function App() {
   }
 
   async function placeBid() {
-    if(!game||game.status!=="auction"||game.award_pending||!activePlayer||!myMember) return;
-    if(myPicks.length>=7) return setMessage("Dein Team ist bereits vollständig.");
-    const amount=Number(game.highest_bid||0)+1;
-    if(game.turn_user_id && game.turn_user_id!==me.id) return setMessage("Warte, bis du an der Reihe bist.");
-    if(amount>Number(myMember.budget_left)) return setMessage("Dafür reicht dein Budget nicht.");
-    setBusy(true);
+    if(busy || !game || game.status!=="auction" || game.award_pending || !activePlayer || !myMember) return;
+    setBusy(true); setMessage("");
+    const [{data:latest,error:gameError},{data:latestMember,error:memberError},{data:latestPicks,error:picksError}] = await Promise.all([
+      supabase.from("draft_games").select("status,theme,current_player_key,highest_bid,highest_bidder,turn_user_id,award_pending").eq("id",game.id).single(),
+      supabase.from("draft_game_members").select("budget_left").eq("game_id",game.id).eq("user_id",me.id).single(),
+      supabase.from("draft_picks").select("player_key").eq("game_id",game.id).eq("user_id",me.id)
+    ]);
+    if(gameError || memberError || picksError) {
+      setBusy(false); setMessage("Spielstand konnte nicht geprüft werden. Bitte aktualisiere das Spiel.");
+      await loadGame(game.id); return;
+    }
+    if(latest.status!=="auction" || latest.award_pending || latest.current_player_key!==activePlayer.key) {
+      setBusy(false); setMessage("Der Spielstand hat sich geändert. Bitte versuche es erneut.");
+      await loadGame(game.id); return;
+    }
+    if(latest.turn_user_id!==me.id) {
+      setBusy(false); setMessage("Du bist nicht mehr an der Reihe.");
+      await loadGame(game.id); return;
+    }
+    if((latestPicks||[]).length>=7) {
+      setBusy(false); setMessage("Dein Team ist bereits vollständig."); return;
+    }
+    const amount=Number(latest.highest_bid||0)+1;
+    if(amount>Number(latestMember.budget_left||0)) {
+      setBusy(false); setMessage("Dafür reicht dein Budget nicht."); return;
+    }
     const {error}=await supabase.from("draft_bids").insert({game_id:game.id,bidder_id:me.id,player_key:activePlayer.key,amount});
     if(!error) {
       const next=members.find(m=>m.user_id!==me.id)?.user_id||me.id;
-      const {error:updateError}=await supabase.from("draft_games").update({highest_bid:amount,highest_bidder:me.id,turn_user_id:next}).eq("id",game.id);
+      const {error:updateError}=await supabase.from("draft_games").update({highest_bid:amount,highest_bidder:me.id,turn_user_id:next})
+        .eq("id",game.id).eq("status","auction").eq("current_player_key",activePlayer.key)
+        .eq("highest_bid",Number(latest.highest_bid||0)).eq("turn_user_id",me.id).eq("award_pending",false);
       if(updateError) setMessage(updateError.message);
+      else await loadGame(game.id);
     } else setMessage(error.message);
-    setBusy(false);loadGame(game.id);
+    setBusy(false); await loadGame(game.id);
   }
 
   async function advanceAuction() {
@@ -309,26 +332,52 @@ export default function App() {
   }
 
   async function securePlayer() {
-    if(!game || game.status!=="auction" || !game.award_pending || game.highest_bidder!==me.id || !activePlayer || !myMember) return;
-    setBusy(true);
-    const slot=myPicks.length;
+    if(busy || !game || game.status!=="auction" || !game.award_pending || game.highest_bidder!==me.id || !activePlayer) return;
+    setBusy(true); setMessage("");
+    const [{data:latest,error:gameError},{data:latestMember,error:memberError},{data:latestPicks,error:picksError}] = await Promise.all([
+      supabase.from("draft_games").select("status,current_player_key,highest_bid,highest_bidder,award_pending").eq("id",game.id).single(),
+      supabase.from("draft_game_members").select("budget_left").eq("game_id",game.id).eq("user_id",me.id).single(),
+      supabase.from("draft_picks").select("player_key,slot_index").eq("game_id",game.id).eq("user_id",me.id).order("slot_index")
+    ]);
+    if(gameError || memberError || picksError) {
+      setBusy(false); setMessage("Spielstand konnte nicht geprüft werden. Bitte aktualisiere das Spiel.");
+      await loadGame(game.id); return;
+    }
+    if(latest.status!=="auction" || !latest.award_pending || latest.highest_bidder!==me.id || latest.current_player_key!==activePlayer.key) {
+      setBusy(false); setMessage("Der Zuschlag ist nicht mehr aktuell. Bitte prüfe den Spielstand.");
+      await loadGame(game.id); return;
+    }
+    const ownPicks=latestPicks||[];
+    const slot=ownPicks.length;
+    const price=Number(latest.highest_bid||0);
     if(slot>=7) { setBusy(false); return setMessage("Dein Team ist bereits vollständig."); }
+    if(price>Number(latestMember.budget_left||0)) {
+      setBusy(false); setMessage("Dein Budget reicht für dieses Gebot nicht mehr.");
+      await loadGame(game.id); return;
+    }
+    if(ownPicks.some(p=>canonicalPlayerKey(p.player_key)===activePlayer.key)) {
+      setBusy(false); setMessage("Dieser Spieler ist bereits in deinem Team.");
+      await loadGame(game.id); return;
+    }
     const {error}=await supabase.from("draft_picks").insert({
       game_id:game.id,user_id:me.id,slot_index:slot,position:activePlayer.role,
       player_key:activePlayer.key,player_name:activePlayer.name,rating:activePlayer.rating,
-      paid:game.highest_bid,is_auto:false
+      paid:price,is_auto:false
     });
-    if(error) { setBusy(false); return setMessage(error.message); }
-    const newBudget=Math.max(0,Number(myMember.budget_left||0)-Number(game.highest_bid||0));
+    if(error) { setBusy(false); setMessage(error.message); await loadGame(game.id); return; }
+    const newBudget=Math.max(0,Number(latestMember.budget_left||0)-price);
     const {error:budgetError}=await supabase.from("draft_game_members").update({budget_left:newBudget}).eq("game_id",game.id).eq("user_id",me.id);
-    if(budgetError) { setBusy(false); return setMessage(budgetError.message); }
+    if(budgetError) { setBusy(false); setMessage("Spieler gespeichert, Budget konnte aber nicht aktualisiert werden: "+budgetError.message); await loadGame(game.id); return; }
     if(newBudget===0 && slot<6) {
-      const used=new Set([...picks.map(x=>canonicalPlayerKey(x.player_key)),activePlayer.key]);
+      const used=new Set([...ownPicks.map(x=>canonicalPlayerKey(x.player_key)),activePlayer.key]);
       const fillers=makePool(game.theme).filter(p=>!used.has(p.key));
       const rows=fillers.slice(0,6-slot).map((p,i)=>({game_id:game.id,user_id:me.id,slot_index:slot+1+i,position:p.role,player_key:p.key,player_name:p.name,rating:Math.min(70,p.rating),paid:0,is_auto:true}));
-      const {error:autoError}=await supabase.from("draft_picks").insert(rows);
-      if(autoError) { setBusy(false); return setMessage("Spieler gesichert, aber Auto-Füller konnten nicht gespeichert werden: "+autoError.message); }
+      if(rows.length) {
+        const {error:autoError}=await supabase.from("draft_picks").insert(rows);
+        if(autoError) { setBusy(false); setMessage("Spieler gesichert, Auto-Füller fehlen noch: "+autoError.message); await loadGame(game.id); return; }
+      }
     }
+    await loadGame(game.id);
     setBusy(false);
     await advanceAuction();
   }
